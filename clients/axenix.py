@@ -7,7 +7,7 @@ from httpx import Response
 
 from clients.api_client import BaseApiClientAbstract
 from clients.response_models import BookingOrderResponseModel, BookingOrderRequestModel, GetTrainsResponseModel, \
-    GetWagonsInfoResponseModel, GetSeatsResponseModel
+    GetWagonsInfoResponseModel, GetSeatsResponseModel, BookingOrderRequestModelV2
 
 from app.settings import settings
 
@@ -23,6 +23,7 @@ class AxenixClient(BaseApiClientAbstract):
     # __base_url = "https://api.t-app.ru/ax-train/mocks/"
     __booking_url = __base_url + "api/order"
     __get_trains_url = __base_url + "api/info/trains"
+    __get_train_url = __base_url + "api/info/train"
     __get_wagon_url = __base_url + "api/info/seats"
     __auth_url = __base_url + "api/auth/login"
     __auth_token = None
@@ -41,10 +42,11 @@ class AxenixClient(BaseApiClientAbstract):
             )
             raise self.NoneTokenException()
 
-    async def __booking(self, user_id: int, body: BookingOrderRequestModel):
+    async def __booking(self, user_id: int, body: BookingOrderRequestModelV2):
         self.log_with_task_id(
             "info",
-            f"Бронирование заказа для пользователя: {user_id}"
+            f"Бронирование заказ для пользователя: {user_id} "
+            f"-> Места: {body.seat_ids}"
         )
         response = await self.get_page(
             self.__booking_url,
@@ -52,14 +54,10 @@ class AxenixClient(BaseApiClientAbstract):
                 "Authorization": f"Bearer {self.__auth_token}"
             },
             json_format=True,
-            json_data=body,
+            json_data=body.model_dump(),
             limit_request=True,
             method="post"
         )
-        # response = {
-        #     "order_id": random.randint(1000, 9999),
-        # }
-
         if isinstance(response, dict):
             order_id = response.get("order_id")
             assert order_id is not None
@@ -82,6 +80,9 @@ class AxenixClient(BaseApiClientAbstract):
                 f"Ошибка бронирования заказа для {user_id}. "
                 f"[{response.status_code}] - {response.text}"
             )
+            if response.status_code == 403:
+                async with self.lock:
+                    self.__auth_token = None
             return None
 
     async def __auth(self):
@@ -120,7 +121,7 @@ class AxenixClient(BaseApiClientAbstract):
 
     async def booking(
             self,
-            orders_to_booking: list[dict[str, BookingOrderRequestModel | int]]
+            orders_to_booking: list[dict[str, BookingOrderRequestModelV2 | int]]
     ) -> list[BookingOrderResponseModel | None]:
         try:
             self.check_token()
@@ -189,7 +190,7 @@ class AxenixClient(BaseApiClientAbstract):
             except self.AuthError:
                 return []
         response = await self.get_page(
-            self.__get_trains_url + f"/{train_id}", headers={
+            self.__get_train_url + f"/{train_id}", headers={
                 "Authorization": f"Bearer {self.__auth_token}"
             },
             json_format=True,

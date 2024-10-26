@@ -1,13 +1,24 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class BookingOrderRequestModel(BaseModel):
     train_id: int
     wagon_id: int
-    seat_id: int
+    seat_ids: int
 
 
-class BookingOrderResponseModel(BookingOrderRequestModel):
+class BookingOrderRequestModelV2(BookingOrderRequestModel):
+    seat_ids: list[int]
+
+    @model_validator(mode="before")
+    def validate_seat_ids(self, v):
+        if isinstance(self.get("seat_ids"), int):
+            self["seat_ids"] = [self.get("seat_ids")]
+        return self
+
+
+
+class BookingOrderResponseModel(BookingOrderRequestModelV2):
     user_id: int
     booking_date: str
     order_id: int

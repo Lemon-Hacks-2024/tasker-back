@@ -4,7 +4,8 @@ import logging
 
 from app.models import Income, WagonType, PlacePosition
 from clients.axenix import AxenixClient
-from clients.response_models import GetTrainsResponseModel, BookingOrderRequestModel, GetSeatsResponseModel
+from clients.response_models import GetTrainsResponseModel, BookingOrderRequestModel, GetSeatsResponseModel, \
+    BookingOrderRequestModelV2
 
 
 class BookingService:
@@ -23,7 +24,7 @@ class BookingService:
                     "params": BookingOrderRequestModel(
                         train_id=train_id,
                         wagon_id=wagon_id,
-                        seat_id=seat_id,
+                        seat_ids=seat_id,
                     )
                 }])
                 if order_data.seats_qty is not None and order_data.seats_qty > 0:
@@ -35,15 +36,15 @@ class BookingService:
                     break
 
         if order_data.need_nearby:
-            seats_ids = [
-                param["params"].seat_id
+            seats_ids_list = [
+                param["params"].seat_ids
                 for param in _booking_params
             ]
 
             seats_nums = {
                 seat.seat_num: seat.block
                 for seat in seats["seats"]
-                    if seat.seat_id in seats_ids
+                    if seat.seat_id in seats_ids_list
             }
 
             _nums = list(seats_nums.keys())
@@ -76,7 +77,6 @@ class BookingService:
         for res in result:
             if res is not None:
                 return res
-
         return None
 
     async def need_booking_data_exist(
@@ -100,57 +100,24 @@ class BookingService:
 
         if train_id is not None and wagon_id is not None and seat_id is None:
             booking_params = await self.wagons_processing(user_id, train_id, wagon_id, order_data)
-            # seats = await self.client.get_wagon_info(train_id=train_id, wagon_id=wagon_id)
-            # _booking_params = []
-            # for seat in seats["seats"]:
-            #     seat_id = self.seat_processing(seat, order_data)
-            #     if seat_id is not None:
-            #         _booking_params.extend([{
-            #             "user_id": user_id,
-            #             "params": BookingOrderRequestModel(
-            #                 train_id=train_id,
-            #                 wagon_id=wagon_id,
-            #                 seat_id=seat_id,
-            #             )
-            #         }])
-            #         if order_data.seats_qty is not None and order_data.seats_qty > 0:
-            #             if len(_booking_params) == order_data.seats_qty:
-            #                 break
-            #             else:
-            #                 continue
-            #         else:
-            #             break
-            #
-            # if order_data.need_nearby:
-            #     seats_nums = {
-            #         param["param"].seat_num: param["param"].block
-            #         for param in _booking_params
-            #     }
-            #
-            #     _nums = list(seats_nums.keys())
-            #     _nums.sort(key=lambda x: x)
-            #     _block = seats_nums.values()
-            #
-            #     set_block = set(_block)
-            #     if len(set_block) > 1:
-            #         return None
-            #
-            #     for i in _nums:
-            #         if abs(_nums[i] - _nums[i + 1]) != 1:
-            #             return None
-            #
-            # booking_params = _booking_params
 
         if train_id is not None and wagon_id is None and seat_id is None:
-            # train = await self.client.get_train_by_id(train_id=train_id)
-            # if train.available_seats_count == 0:
-            #     return None
             booking_params = await self.train_processing(user_id, train_id, order_data)
 
 
-
-        if booking_params is None:
+        if booking_params is None or len(booking_params) == 0:
             return None
+
+        to_final_params = self.merge_dicts([
+            params["params"]
+            for params in booking_params
+        ])
+
+        booking_params = [{
+            "user_id": user_id,
+            "params": BookingOrderRequestModelV2.model_validate(to_final_params),
+        }]
+        # booking_params = self.check_seats_list_len(booking_params)
         result = await self.client.booking(booking_params)
         return result
 
@@ -162,7 +129,7 @@ class BookingService:
         if booking_result is not None:
             return booking_result
 
-        start_point, *_, end_point = order_data.route.split("->")
+        start_point, *_, end_point = order_data.route.split(" -> ")
         orders_for_route = await self.client.get_trains(
             start_point, end_point
         )
@@ -201,35 +168,25 @@ class BookingService:
             f"со свободными местами"
         )
 
-        wagons_ids = self.get_wagons_ids(
-            suitable_available_seats_count_trains, order_data.wagon_type
-        )
-
-        coroutines = []
-        for wagon_id in wagons_ids:
-            coroutines.append(
-                self.client.get_wagon_info(**wagon_id)
+        final_booking_params = []
+        for train in suitable_available_seats_count_trains:
+            booking_params = await self.train_processing(
+                order_data.user_id, train.train_id, order_data
             )
-        seats_data = await asyncio.gather(*coroutines)
-        booking_data = []
-        try:
-            for obj in seats_data:
-                for seat in obj["seats"]:
-                    seat_id = self.seat_processing(seat, order_data)
-                    if seat_id is not None:
-                        booking_data = [{
-                            "user_id": order_data.user_id,
-                            "params": BookingOrderRequestModel(
-                                seat_id=seat.seat_id,
-                                train_id=obj["train_id"],
-                                wagon_id=obj["wagon_id"],
-                            )
-                        }]
-                        raise StopIteration()
-        except StopIteration:
-            assert booking_data is not []
-            booking_user_data = await self.client.booking(booking_data)
-            return booking_user_data
+            if booking_params is None or len(booking_params) == 0:
+                return None
+            to_final_params = self.merge_dicts([
+                params["params"]
+                for params in booking_params
+            ])
+            final_booking_params.append({
+                "user_id": order_data.user_id,
+                "params": BookingOrderRequestModelV2.model_validate(to_final_params),
+            })
+
+        # final_booking_params = self.check_seats_list_len(final_booking_params)
+        result = await self.client.booking(final_booking_params)
+        return result
 
     @staticmethod
     def get_seat_position(seat_num: str):
@@ -258,10 +215,7 @@ class BookingService:
                 seat_id = seat.seat_id
             else:
                 return None
-
         return seat_id
-
-
 
     @staticmethod
     def get_wagons_ids(
@@ -285,6 +239,24 @@ class BookingService:
                     })
         return result
 
+    @staticmethod
+    def merge_dicts(dicts):
+        merged_dict = {}
+        for d in dicts:
+            for key, value in d.model_dump().items():
+                if key in merged_dict and not isinstance(merged_dict[key], list) and merged_dict[key] != value:
+                    merged_dict[key] = [merged_dict[key], value]
+                elif key in merged_dict and isinstance(merged_dict[key], list):
+                    if value not in merged_dict[key]:
+                        merged_dict[key].append(value)
+                else:
+                    merged_dict[key] = value
+        return merged_dict
+
+    @staticmethod
+    def check_seats_list_len(final_booking_params):
+        for param in final_booking_params:
+            param
 
 
 
