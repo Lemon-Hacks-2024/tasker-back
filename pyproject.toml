@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "ticker-back"
+version = "0.1.0"
+description = ""
+authors = ["seemyown <semyon.albeev@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = "^0.115.3"
+uvicorn = "^0.32.0"
+faststream = {extras = ["cli"], version = "^0.5.28"}
+pydantic-settings = "^2.6.0"
+aio-pika = "^9.4.3"
+httpx = "^0.27.2"
+pyyaml = "^6.0.2"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

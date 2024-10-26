@@ -1,0 +1,65 @@
+version: 1
+disable_existing_loggers: False
+
+formatters:
+  base:
+    format: "%(asctime)s: [%(levelname)s] <> %(name)s - %(message)s"
+  warn:
+    format: "%(asctime)s: [%(levelname)s] <> %(name)s.%(funcName)s(): %(message)s"
+  error:
+    format: "%(asctime)s: [%(levelname)s] <PID %(process)d:%(processName)s> %(name)s.%(funcName)s(): %(message)s"
+
+handlers:
+  console:
+    class: logging.StreamHandler
+    level: DEBUG
+    formatter: base
+    stream: ext://sys.stdout
+
+  debug_file_handler:
+    class: logging.handlers.RotatingFileHandler
+    level: DEBUG
+    formatter: base
+    filename: logs/debug/debug.log
+    maxBytes: 104857600
+    backupCount: 20
+    encoding: utf8
+
+  info_file_handler:
+    class: logging.handlers.RotatingFileHandler
+    level: INFO
+    formatter: base
+    filename: logs/info/info.log
+    maxBytes: 104857600
+    backupCount: 20
+    encoding: utf8
+
+  warning_file_handler:
+    class: logging.handlers.RotatingFileHandler
+    level: WARN
+    formatter: warn
+    filename: logs/warning/warning.log
+    maxBytes: 104857600
+    backupCount: 20
+    encoding: utf8
+
+  error_file_handler:
+    class: logging.handlers.RotatingFileHandler
+    level: ERROR
+    formatter: error
+    filename: logs/error/error.log
+    maxBytes: 104857600
+    backupCount: 20
+    encoding: utf8
+
+root:
+  level: INFO
+  handlers: [console, debug_file_handler, info_file_handler, warning_file_handler, error_file_handler]
+  propagate: yes
+uvicorn.access:
+  level: INFO
+  handlers: [console, info_file_handler, warning_file_handler, error_file_handler ]
+  propagate: no
+watchfiles.main:
+  level: ERROR
+  handlers: []
