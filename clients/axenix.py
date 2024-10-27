@@ -13,13 +13,14 @@ from app.settings import settings
 
 
 class AxenixClient(BaseApiClientAbstract):
-    request_per_seconds = 8
+    request_per_seconds = 2
     seconds = 1
     request_times = OrderedDict.fromkeys(
         range(request_per_seconds), None
     )
 
     __base_url = "http://84.252.135.231/"
+    # __base_url = "http://localhost:8000/"
     # __base_url = "https://api.t-app.ru/ax-train/mocks/"
     __booking_url = __base_url + "api/order"
     __get_trains_url = __base_url + "api/info/trains"
@@ -249,7 +250,8 @@ class AxenixClient(BaseApiClientAbstract):
             )
             return []
 
-
+    async def auth(self):
+        await self.__auth()
 
 
 

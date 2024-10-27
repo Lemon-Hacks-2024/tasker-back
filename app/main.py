@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sys
+from contextlib import asynccontextmanager
 
 from faststream import FastStream
 from faststream.rabbit import RabbitBroker
@@ -15,10 +16,17 @@ from clients.internal import InternalClient
 settings.setup_architecture()
 settings.setup_logging()
 
-broker = RabbitBroker(url=settings.amqp_url)
-app = FastStream(broker)
 service = BookingService(AxenixClient())
 logger = logging.getLogger(__name__)
+
+@asynccontextmanager
+async def lifespan(_: FastStream):
+    await service.client.auth()
+    yield
+
+
+broker = RabbitBroker(url=settings.amqp_url)
+app = FastStream(broker, lifespan=lifespan)
 
 
 @broker.subscriber(
@@ -49,5 +57,4 @@ if __name__ == '__main__':
         asyncio.run(app.run())
     except Exception as e:
         logger.exception(e)
-
 

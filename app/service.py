@@ -2,6 +2,8 @@ import asyncio
 import datetime
 import logging
 
+from watchfiles import awatch
+
 from app.models import Income, WagonType, PlacePosition
 from clients.axenix import AxenixClient
 from clients.response_models import GetTrainsResponseModel, BookingOrderRequestModel, GetSeatsResponseModel, \
@@ -64,20 +66,28 @@ class BookingService:
     async def train_processing(self, user_id: int, train_id: int, order_data: Income):
         train = await self.client.get_train_by_id(train_id=train_id)
         if train.available_seats_count == 0:
-            return None
+            return []
 
         train_wagons = train.wagons_info
         coroutines = []
         for wagon in train_wagons:
+            wagon_type = wagon["type"]
+            if order_data.wagon_type is not None:
+                if wagon_type != order_data.wagon_type.value:
+                    continue
+
             coroutines.append(
                 self.wagons_processing(user_id, train_id, wagon["wagon_id"], order_data)
             )
 
         result = await asyncio.gather(*coroutines)
+        to_handle = []
         for res in result:
             if res is not None:
-                return res
-        return None
+                # yield res
+                to_handle.append(res)
+        return to_handle
+        # return []
 
     async def need_booking_data_exist(
             self, order_data: Income
@@ -117,7 +127,7 @@ class BookingService:
             "user_id": user_id,
             "params": BookingOrderRequestModelV2.model_validate(to_final_params),
         }]
-        # booking_params = self.check_seats_list_len(booking_params)
+        booking_params = self.split_seats(booking_params)
         result = await self.client.booking(booking_params)
         return result
 
@@ -146,8 +156,8 @@ class BookingService:
             date_to = datetime.datetime.strptime(
                 order_data.date_to, "%d.%m.%Y %H:%M:%S"
             )
-            if date_to <= datetime.datetime.now():
-                return False
+            # if date_to <= datetime.datetime.now():
+            #     return False
             if date_from <= datetime.datetime.strptime(
                     train.startpoint_departure,
                     "%d.%m.%Y %H:%M:%S"
@@ -170,21 +180,34 @@ class BookingService:
 
         final_booking_params = []
         for train in suitable_available_seats_count_trains:
-            booking_params = await self.train_processing(
-                order_data.user_id, train.train_id, order_data
-            )
-            if booking_params is None or len(booking_params) == 0:
-                return None
-            to_final_params = self.merge_dicts([
-                params["params"]
-                for params in booking_params
-            ])
-            final_booking_params.append({
-                "user_id": order_data.user_id,
-                "params": BookingOrderRequestModelV2.model_validate(to_final_params),
-            })
+            # booking_params = await self.train_processing(
+            #     order_data.user_id, train.train_id, order_data
+            # )
+            # if booking_params is None or len(booking_params) == 0:
+            #     return None
+            # to_final_params = self.merge_dicts([
+            #     params["params"]
+            #     for params in booking_params
+            # ])
+            # final_booking_params.append({
+            #     "user_id": order_data.user_id,
+            #     "params": BookingOrderRequestModelV2.model_validate(to_final_params),
+            # })
+             for booking_params in await self.train_processing(order_data.user_id, train.train_id, order_data):
+                if booking_params is None or len(booking_params) == 0:
+                    return None
+                to_final_params = self.merge_dicts([
+                    params["params"]
+                    for params in booking_params
+                ])
+                final_booking_params.append({
+                    "user_id": order_data.user_id,
+                    "params": BookingOrderRequestModelV2.model_validate(to_final_params),
+                })
 
-        # final_booking_params = self.check_seats_list_len(final_booking_params)
+        final_booking_params = self.merge_seats_by_train_and_wagon(final_booking_params)
+        final_booking_params = self.group_common_train(final_booking_params)
+        final_booking_params = self.split_and_merge_seats(final_booking_params)
         result = await self.client.booking(final_booking_params)
         return result
 
@@ -205,7 +228,7 @@ class BookingService:
 
         if order_data.place_position is not None:
             seat_position = self.get_seat_position(seat.seat_num)
-            if seat_position == order_data.place_position.value:
+            if seat_position in order_data.place_position:
                 seat_id = seat.seat_id
             else:
                 return None
@@ -254,15 +277,129 @@ class BookingService:
         return merged_dict
 
     @staticmethod
-    def check_seats_list_len(final_booking_params):
-        for param in final_booking_params:
-            param
+    def split_seats(final_booking_params: list):
+        result = []
+        max_seats = 10
 
+        for order in final_booking_params:
+            user_id = order['user_id']
+            params = order['params']
 
+            seat_ids = params.seat_ids
 
+            for i in range(0, len(seat_ids), max_seats):
+                chunk = seat_ids[i:i + max_seats]
+                new_params = BookingOrderRequestModelV2(train_id=params.train_id, wagon_id=params.wagon_id,
+                                                        seat_ids=chunk)
+                result.append({'user_id': user_id, 'params': new_params})
 
+        return result
 
+    @staticmethod
+    def split_and_merge_seats(orders):
+        result = []
+        max_seats = 10
+        merged_orders = {}
 
+        for order in orders:
+            user_id = order['user_id']
+            params = order['params']
+            seat_ids = params.seat_ids
 
+            # Проверка на необходимость объединения
+            if params.train_id in merged_orders and len(seat_ids) <= 2:
+                existing_order = merged_orders[params.train_id]
+                if len(existing_order['params'].seat_ids) <= 2:
+                    # Объединяем места из обоих заказов
+                    combined_seat_ids = existing_order['params'].seat_ids + seat_ids
+                    if len(combined_seat_ids) <= max_seats:
+                        existing_order['params'].seat_ids = combined_seat_ids
+                        continue
 
+            # Если объединение не произошло, разбиваем на чанки по max_seats
+            for i in range(0, len(seat_ids), max_seats):
+                chunk = seat_ids[i:i + max_seats]
+                new_params = BookingOrderRequestModelV2(train_id=params.train_id, wagon_id=params.wagon_id,
+                                                        seat_ids=chunk)
+                new_order = {'user_id': user_id, 'params': new_params}
 
+                # Добавляем новый заказ в результаты и словарь для объединения
+                result.append(new_order)
+                merged_orders[params.train_id] = new_order
+
+        return result
+
+    @staticmethod
+    def merge_seats_with_same_train_id(orders):
+        result = []
+        seat_limit = 10
+        merged_orders = {}
+
+        # Обрабатываем каждый заказ
+        for order in orders:
+            user_id = order['user_id']
+            params = order['params']
+            train_id = params.train_id
+            seat_ids = params.seat_ids
+
+            if train_id in merged_orders and len(seat_ids) <= seat_limit:
+                existing_order = merged_orders[train_id]
+                if len(existing_order['params'].seat_ids) <= seat_limit:
+                    combined_seat_ids = existing_order['params'].seat_ids + seat_ids
+                    if len(combined_seat_ids) <= 10:
+                        existing_order['params'].seat_ids = combined_seat_ids
+                    else:
+                        continue
+            else:
+                if len(seat_ids) <= seat_limit:
+                    merged_orders[train_id] = {
+                        'user_id': user_id,
+                        'params': BookingOrderRequestModelV2(train_id=params.train_id, wagon_id=params.wagon_id,
+                                                             seat_ids=seat_ids)
+                    }
+
+        result = list(merged_orders.values())
+
+        return result
+
+    @staticmethod
+    def merge_seats_by_train_and_wagon(orders):
+        merged_orders = {}
+
+        for order in orders:
+            user_id = order['user_id']
+            params = order['params']
+            train_id = params.train_id
+            wagon_id = params.wagon_id
+            seat_ids = params.seat_ids
+
+            # Создаем уникальный ключ для комбинации train_id и wagon_id
+            key = (train_id, wagon_id)
+
+            # Если ключ уже существует, объединяем seat_ids
+            if key in merged_orders:
+                merged_orders[key]['params'].seat_ids.extend(seat_ids)
+            else:
+                # Добавляем новый заказ в словарь для будущего объединения
+                merged_orders[key] = {
+                    'user_id': user_id,
+                    'params': BookingOrderRequestModelV2(train_id=train_id, wagon_id=wagon_id, seat_ids=seat_ids)
+                }
+
+        # Возвращаем список объединённых заказов
+        return list(merged_orders.values())
+
+    @staticmethod
+    def group_common_train(orders):
+        result = []
+        train_id = None
+
+        for order in orders:
+            if train_id is None:
+                train_id = order["params"].train_id
+            if order["params"].train_id == train_id:
+                result.append(order)
+            else:
+                continue
+
+        return result
