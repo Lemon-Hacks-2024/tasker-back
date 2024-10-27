@@ -19,14 +19,8 @@ settings.setup_logging()
 service = BookingService(AxenixClient())
 logger = logging.getLogger(__name__)
 
-@asynccontextmanager
-async def lifespan(_: FastStream):
-    await service.client.auth()
-    yield
-
-
 broker = RabbitBroker(url=settings.amqp_url)
-app = FastStream(broker, lifespan=lifespan)
+app = FastStream(broker)
 
 
 @broker.subscriber(
@@ -35,6 +29,7 @@ app = FastStream(broker, lifespan=lifespan)
 async def collect_new_bookings_tickets(
         body: Income
 ):
+    await service.client.check_token()
     result = await service.processing_auto(body)
     if not result:
         if isinstance(result, bool):

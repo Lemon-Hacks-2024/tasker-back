@@ -1,33 +1,32 @@
 import asyncio
 import datetime
-import random
+import time
 from typing import OrderedDict
 
 from httpx import Response
 
-from clients.api_client import BaseApiClientAbstract
-from clients.response_models import BookingOrderResponseModel, BookingOrderRequestModel, GetTrainsResponseModel, \
-    GetWagonsInfoResponseModel, GetSeatsResponseModel, BookingOrderRequestModelV2
-
 from app.settings import settings
+from clients.api_client import BaseApiClientAbstract
+from clients.response_models import BookingOrderResponseModel, GetTrainsResponseModel, \
+    GetSeatsResponseModel, BookingOrderRequestModelV2
 
 
 class AxenixClient(BaseApiClientAbstract):
-    request_per_seconds = 2
+    request_per_seconds = 1
     seconds = 1
     request_times = OrderedDict.fromkeys(
         range(request_per_seconds), None
     )
 
     __base_url = "http://84.252.135.231/"
-    # __base_url = "http://localhost:8000/"
-    # __base_url = "https://api.t-app.ru/ax-train/mocks/"
     __booking_url = __base_url + "api/order"
     __get_trains_url = __base_url + "api/info/trains"
     __get_train_url = __base_url + "api/info/train"
     __get_wagon_url = __base_url + "api/info/seats"
     __auth_url = __base_url + "api/auth/login"
     __auth_token = None
+    __auth_token_ttl = 10
+    __auth_token_kept = None
 
     class NoneTokenException(Exception):
         ...
@@ -35,13 +34,25 @@ class AxenixClient(BaseApiClientAbstract):
     class AuthError(Exception):
         ...
 
-    def check_token(self):
+    async def check_token(self):
         if self.__auth_token is None:
             self.log_with_task_id(
                 "warning",
                 "Токен отсутствует"
             )
-            raise self.NoneTokenException()
+            await self.__auth()
+            return
+
+        if (time.time() - self.__auth_token_kept) > self.__auth_token_ttl:
+            self.log_with_task_id(
+                "warning",
+                "Токен истек"
+            )
+            await self.__auth()
+
+        self.log_with_task_id(
+            "info", "Токен в порядке"
+        )
 
     async def __booking(self, user_id: int, body: BookingOrderRequestModelV2):
         self.log_with_task_id(
@@ -105,6 +116,7 @@ class AxenixClient(BaseApiClientAbstract):
             )
             async with self.lock:
                 self.__auth_token = response["token"]
+                self.__auth_token_kept = time.time()
         elif isinstance(response, Response):
             self.log_with_task_id(
                 "error",
@@ -124,13 +136,6 @@ class AxenixClient(BaseApiClientAbstract):
             self,
             orders_to_booking: list[dict[str, BookingOrderRequestModelV2 | int]]
     ) -> list[BookingOrderResponseModel | None]:
-        try:
-            self.check_token()
-        except self.NoneTokenException:
-            try:
-                await self.__auth()
-            except self.AuthError:
-                return []
         coroutines = []
         for order in orders_to_booking:
             coroutines.append(self.__booking(
@@ -144,13 +149,6 @@ class AxenixClient(BaseApiClientAbstract):
         return result
 
     async def get_trains(self, from_: str, to_: str):
-        try:
-            self.check_token()
-        except self.NoneTokenException:
-            try:
-                await self.__auth()
-            except self.AuthError:
-                return []
         response = await self.get_page(
             self.__get_trains_url, headers={
                 "Authorization": f"Bearer {self.__auth_token}"
@@ -183,13 +181,6 @@ class AxenixClient(BaseApiClientAbstract):
             return []
 
     async def get_train_by_id(self, train_id: int):
-        try:
-            self.check_token()
-        except self.NoneTokenException:
-            try:
-                await self.__auth()
-            except self.AuthError:
-                return []
         response = await self.get_page(
             self.__get_train_url + f"/{train_id}", headers={
                 "Authorization": f"Bearer {self.__auth_token}"
@@ -213,13 +204,6 @@ class AxenixClient(BaseApiClientAbstract):
             return []
 
     async def get_wagon_info(self, train_id: int, wagon_id: int):
-        try:
-            self.check_token()
-        except self.NoneTokenException:
-            try:
-                await self.__auth()
-            except self.AuthError:
-                return []
         response = await self.get_page(
             self.__get_wagon_url,
             headers={
@@ -249,11 +233,3 @@ class AxenixClient(BaseApiClientAbstract):
                 f"Ошибка получения данных по вагону: {wagon_id}"
             )
             return []
-
-    async def auth(self):
-        await self.__auth()
-
-
-
-
-
